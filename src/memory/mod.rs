@@ -178,17 +178,22 @@ impl LongTermMemory {
             return;
         }
 
-        self.items.sort_by(|a, b| {
-            let score_a = self.calculate_item_score(a);
-            let score_b = self.calculate_item_score(b);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        let mut scored_items: Vec<_> = self.items.drain(..).map(|item| {
+            let score = Self::calculate_item_score_static(&item);
+            (item, score)
+        }).collect();
+
+        scored_items.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let remove_count = self.items.len() - self.capacity / 2;
-        self.items.truncate(self.capacity - remove_count);
+        let remove_count = scored_items.len() - self.capacity / 2;
+        scored_items.truncate(self.capacity - remove_count);
+        
+        self.items = scored_items.into_iter().map(|(item, _)| item).collect();
     }
 
-    fn calculate_item_score(&self, item: &LongTermMemoryItem) -> f32 {
+    fn calculate_item_score_static(item: &LongTermMemoryItem) -> f32 {
         let recency_factor = {
             let age = Utc::now().signed_duration_since(item.created_at).num_seconds() as f32;
             let days = age / 86400.0;

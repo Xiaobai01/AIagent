@@ -1,10 +1,9 @@
 use crate::core::{Message, MessageRole, LLMResponse, ToolCall, ToolResult};
 use crate::memory::MemoryManager;
 use crate::prompts::PromptManager;
-use crate::llm::{LLMProvider, LLMConfig, create_llm_provider, ToolDefinition};
+use crate::llm::{LLMProvider, LLMConfig, create_llm_provider};
 use crate::skills::SkillManager;
-use anyhow::{Result, Context};
-use std::sync::Arc;
+use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -97,10 +96,10 @@ impl Agent {
 
     fn create_system_message(&self) -> Message {
         let mut context = std::collections::HashMap::new();
-        context.insert("name", &self.config.name);
-        context.insert("role", &self.config.role);
-        context.insert("capabilities", &self.config.capabilities);
-        context.insert("constraints", &self.config.constraints);
+        context.insert("name".to_string(), self.config.name.clone());
+        context.insert("role".to_string(), self.config.role.clone());
+        context.insert("capabilities".to_string(), self.config.capabilities.clone());
+        context.insert("constraints".to_string(), self.config.constraints.clone());
 
         let content = self.prompt_manager
             .render_template("agent_instruction", &context)

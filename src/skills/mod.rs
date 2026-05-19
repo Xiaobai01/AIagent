@@ -255,7 +255,6 @@ where
     }
 }
 
-#[derive(Default)]
 pub struct SkillManager {
     skills: HashMap<String, Arc<dyn Skill>>,
 }
