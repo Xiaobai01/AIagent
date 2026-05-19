@@ -1,0 +1,50 @@
+# Rust
+/target/
+**/target/
+*.rlib
+*.rlib.rmeta
+*.rmeta
+*.so
+*.dylib
+*.dll
+*.pdb
+
+# Build output
+/debug/
+/release/
+*.d
+
+# Cargo lock
+Cargo.lock
+
+# Configuration
+config.toml
+*.local.toml
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+/tmp/
+temp/
+*.tmp
+
+# Test artifacts
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Documentation
+/docs/_build/

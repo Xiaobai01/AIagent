@@ -1,0 +1,86 @@
+# AI Agent 配置文件示例
+# 复制此文件为 config.toml 并修改配置
+
+# Agent 基础配置
+[agent]
+name = "MyAssistant"
+role = "You are a helpful AI assistant with expertise in programming and problem-solving."
+max_iterations = 10
+
+# Agent 能力描述
+[agent.capabilities]
+description = """
+- Answer technical questions
+- Help with coding and debugging
+- Execute tools when needed
+- Remember conversation context
+- Search for information
+"""
+
+# Agent 约束条件
+[agent.constraints]
+description = """
+- Be helpful and harmless
+- Don't execute dangerous operations
+- Ask for clarification when needed
+- Respect user privacy
+- Follow security best practices
+"""
+
+# 记忆配置
+[memory]
+short_term_capacity = 100
+long_term_capacity = 1000
+enable_consolidation = true
+consolidation_threshold = 0.3
+
+# LLM 配置 - OpenAI
+[llm.openai]
+enabled = true
+api_key = "your-openai-api-key-here"
+model = "gpt-4"
+base_url = "https://api.openai.com/v1"
+temperature = 0.7
+max_tokens = 2048
+timeout_secs = 30
+
+# LLM 配置 - Ollama (本地模型)
+[llm.ollama]
+enabled = false
+model = "llama2"
+base_url = "http://localhost:11434"
+temperature = 0.7
+max_tokens = 2048
+timeout_secs = 60
+
+# LLM 配置 - Anthropic
+[llm.anthropic]
+enabled = false
+api_key = "your-anthropic-api-key-here"
+model = "claude-3-sonnet-20240229"
+base_url = "https://api.anthropic.com"
+temperature = 0.7
+max_tokens = 2048
+timeout_secs = 30
+
+# 默认使用的 LLM provider
+[llm]
+default_provider = "openai"
+
+# 日志配置
+[logging]
+level = "info"  # trace, debug, info, warn, error
+format = "pretty"  # pretty, json
+
+# 技能配置
+[skills]
+enable_file_operations = true
+enable_http_requests = true
+enable_calculator = true
+enable_code_execution = false  # 谨慎启用
+
+# 技能超时配置 (秒)
+[skills.timeout]
+file_operations = 10
+http_requests = 30
+code_execution = 60
