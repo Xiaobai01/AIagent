@@ -1,0 +1,31 @@
+{
+  "productName": "AI Agent",
+  "version": "0.1.0",
+  "identifier": "com.aiagent.app",
+  "build": {
+    "beforeDevCommand": "cd frontend && npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "cd frontend && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AI Agent",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
+}
