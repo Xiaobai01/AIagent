@@ -32,18 +32,49 @@ struct AgentStatsResponse {
     skills: usize,
 }
 
+fn create_llm_config() -> LLMConfig {
+    let provider = std::env::var("LLM_PROVIDER")
+        .unwrap_or_else(|_| "ollama".to_string());
+
+    match provider.as_str() {
+        "openai" => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .unwrap_or_else(|_| "your-api-key".to_string());
+            let model = std::env::var("OPENAI_MODEL")
+                .ok();
+            println!("🔄 使用 OpenAI (模型: {:?})", model.as_ref().unwrap_or(&"gpt-4".to_string()));
+            LLMConfig::openai(api_key, model)
+        }
+        "ollama" => {
+            let model = std::env::var("OLLAMA_MODEL")
+                .unwrap_or_else(|_| "llama3".to_string());
+            let base_url = std::env::var("OLLAMA_BASE_URL").ok();
+            println!("🔄 使用 Ollama (模型: {}, 地址: {})",
+                model,
+                base_url.as_ref().unwrap_or(&"http://localhost:11434".to_string())
+            );
+            LLMConfig::ollama(model, base_url)
+        }
+        _ => {
+            println!("⚠️ 未知 provider '{}', 使用默认 Ollama", provider);
+            let model = std::env::var("OLLAMA_MODEL")
+                .unwrap_or_else(|_| "llama3".to_string());
+            LLMConfig::ollama(model, None)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     utils::init_logging_with_level(tracing::Level::INFO);
-    
+
     let args: Vec<String> = std::env::args().collect();
-    
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .unwrap_or_else(|_| "your-api-key".to_string());
-    
+
+    let llm_config = create_llm_config();
+
     let config = AgentConfig::new(
         "Assistant".to_string(),
-        LLMConfig::openai(api_key, Some("gpt-4".to_string())),
+        llm_config,
     )
     .with_role("You are a helpful AI assistant with access to various tools and skills.".to_string())
     .with_capabilities(
@@ -62,36 +93,36 @@ async fn main() -> Result<()> {
     )
     .with_memory_capacity(100, 1000)
     .with_max_iterations(10);
-    
+
     let agent = Agent::new(config)?;
-    
+
     if args.len() > 1 && args[1] == "server" {
         run_server(agent).await?;
         return Ok(());
     }
-    
+
     println!("🤖 AI Agent Framework");
     println!("====================\n");
-    
+
     println!("Agent initialized successfully!");
     println!("{}\n", agent.get_stats());
-    
+
     println!("Enter your messages below (type 'quit' to exit, 'stats' to see statistics, 'clear' to clear memory):\n");
-    
+
     let mut agent = agent;
-    
+
     loop {
         print!("👤 You: ");
         io::stdout().flush()?;
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         let input = input.trim();
-        
+
         if input.is_empty() {
             continue;
         }
-        
+
         match input.to_lowercase().as_str() {
             "quit" | "exit" | "q" => {
                 println!("\nGoodbye!");
@@ -108,7 +139,7 @@ async fn main() -> Result<()> {
             }
             _ => {}
         }
-        
+
         match agent.chat(input).await {
             Ok(response) => {
                 println!("\n🤖 Agent: {}\n", response);
@@ -118,21 +149,21 @@ async fn main() -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }
 
 async fn run_server(agent: Agent) -> Result<()> {
     let shared_agent = Arc::new(Mutex::new(agent));
-    
+
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     println!("🚀 Server running on http://0.0.0.0:8080");
     println!("📡 Frontend can connect to this endpoint");
-    
+
     loop {
         let (socket, _) = listener.accept().await?;
         let agent_clone = Arc::clone(&shared_agent);
-        
+
         tokio::spawn(async move {
             if let Err(e) = handle_connection(socket, agent_clone).await {
                 eprintln!("Error handling connection: {}", e);
@@ -146,25 +177,31 @@ async fn handle_connection(
     agent: Arc<Mutex<Agent>>,
 ) -> Result<()> {
     let (mut reader, mut writer) = tokio::io::split(socket);
-    
+
     let mut buffer = [0; 4096];
     let n = reader.read(&mut buffer).await?;
-    
+
     if n == 0 {
         return Ok(());
     }
-    
+
     let request = String::from_utf8_lossy(&buffer[..n]);
-    
-    let (path, body) = parse_request(&request);
-    
+
+    let (method, path, body) = parse_request(&request);
+
+    if method == "OPTIONS" {
+        writer.write_all(cors_response().as_bytes()).await?;
+        writer.flush().await?;
+        return Ok(());
+    }
+
     let response = match path {
         "/chat" => {
             if let Ok(req) = serde_json::from_str::<ChatRequest>(&body) {
                 let mut agent_guard = agent.lock().await;
                 let response = agent_guard.chat(&req.message).await;
                 let stats = agent_guard.get_stats();
-                
+
                 match response {
                     Ok(response) => {
                         let resp = ChatResponse {
@@ -206,33 +243,38 @@ async fn handle_connection(
         "/health" => format_response(200, "{\"status\": \"OK\"}"),
         _ => format_response(404, "{\"error\": \"Not found\"}"),
     };
-    
+
     writer.write_all(response.as_bytes()).await?;
     writer.flush().await?;
-    
+
     Ok(())
 }
 
-fn parse_request(request: &str) -> (&str, &str) {
+fn parse_request(request: &str) -> (&str, &str, &str) {
     let lines: Vec<&str> = request.split("\r\n").collect();
-    
+
     if lines.is_empty() {
-        return ("/", "");
+        return ("GET", "/", "");
     }
-    
+
     let first_line = lines[0];
     let parts: Vec<&str> = first_line.split_whitespace().collect();
-    
+
+    let method = if parts.len() > 0 { parts[0] } else { "GET" };
     let path = if parts.len() > 1 { parts[1] } else { "/" };
-    
+
     let body_start = request.find("\r\n\r\n");
     let body = if let Some(pos) = body_start {
         &request[pos + 4..]
     } else {
         ""
     };
-    
-    (path, body)
+
+    (method, path, body)
+}
+
+fn cors_response() -> String {
+    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n".to_string()
 }
 
 fn format_response(status: u16, body: &str) -> String {

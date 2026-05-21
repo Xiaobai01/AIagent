@@ -18,15 +18,6 @@ function App() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [stats, setStats] = useState({ short_term: 0, long_term: 0, skills: 5 })
-  const messagesEndRef = useRef(null)
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
@@ -58,7 +49,7 @@ function App() {
           time: new Date().toLocaleTimeString()
         }
         setMessages(prev => [...prev, botMessage])
-        
+
         if (data.stats) {
           setStats(data.stats)
         }
@@ -81,7 +72,6 @@ function App() {
       setMessages(prev => [...prev, botMessage])
     } finally {
       setIsLoading(false)
-      setTimeout(scrollToBottom, 100)
     }
   }
 
@@ -109,9 +99,9 @@ function App() {
   return (
     <div className="app-container">
       <Sidebar skills={SKILLS} stats={stats} onSkillClick={handleSkillClick} onClearMemory={handleClearMemory} />
-      <MainContent 
-        messages={messages} 
-        input={input} 
+      <MainContent
+        messages={messages}
+        input={input}
         setInput={setInput}
         isLoading={isLoading}
         onSend={handleSend}
@@ -133,8 +123,8 @@ function Sidebar({ skills, stats, onSkillClick, onClearMemory }) {
         <div className="section-title">技能</div>
         <div className="skill-list">
           {skills.map((skill) => (
-            <div 
-              key={skill.name} 
+            <div
+              key={skill.name}
               className="skill-item"
               onClick={() => onSkillClick(skill)}
             >
@@ -176,15 +166,21 @@ function Sidebar({ skills, stats, onSkillClick, onClearMemory }) {
 }
 
 function MainContent({ messages, input, setInput, isLoading, onSend, onKeyDown }) {
+  const messagesEndRef = useRef(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
   return (
     <div className="main-content">
       <Header />
-      
+
       <div className="messages-container">
         {messages.map((msg) => (
           <Message key={msg.id} message={msg} />
         ))}
-        
+
         {isLoading && (
           <div className="message message-bot">
             <div className="avatar avatar-bot">🤖</div>
@@ -200,7 +196,7 @@ function MainContent({ messages, input, setInput, isLoading, onSend, onKeyDown }
             </div>
           </div>
         )}
-        
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -216,7 +212,7 @@ function MainContent({ messages, input, setInput, isLoading, onSend, onKeyDown }
               rows={1}
             />
           </div>
-          <button 
+          <button
             className="send-btn"
             onClick={onSend}
             disabled={!input.trim() || isLoading}
