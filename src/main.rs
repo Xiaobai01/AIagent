@@ -1,12 +1,16 @@
 use ai_agent::{
     Agent, AgentConfig,
     llm::LLMConfig,
+    skills::SkillConfig,
+    cron::{CronManager, ScheduledTask, TaskType, CronSchedule},
     utils,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
+    fs,
     io::{self, Write},
+    path::Path,
     sync::Arc,
 };
 use tokio::{
@@ -30,6 +34,41 @@ struct AgentStatsResponse {
     short_term: usize,
     long_term: usize,
     skills: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanRequest {
+    goal: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddSkillRequest {
+    name: String,
+    description: String,
+    command: Option<String>,
+    code: Option<String>,
+    interpreter: Option<String>,
+    parameters: serde_json::Value,
+    timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskRequest {
+    name: String,
+    description: String,
+    schedule: String,
+    task_type: TaskTypeRequest,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskTypeRequest {
+    #[serde(rename = "type")]
+    task_type: String,
+    message: Option<String>,
+    skill_name: Option<String>,
+    params: Option<serde_json::Value>,
+    command: Option<String>,
 }
 
 fn create_llm_config() -> LLMConfig {
@@ -81,7 +120,8 @@ async fn main() -> Result<()> {
         "- Answer questions and provide information\n\
          - Execute tools like file operations, HTTP requests, calculations\n\
          - Help with coding and technical tasks\n\
-         - Remember conversation context and important information"
+         - Remember conversation context and important information\n\
+         - Support scheduled tasks and automation"
             .to_string()
     )
     .with_constraints(
@@ -137,6 +177,15 @@ async fn main() -> Result<()> {
                 println!("Memory cleared!\n");
                 continue;
             }
+            "skills" => {
+                let skills = agent.get_skills();
+                println!("\nAvailable Skills:");
+                for skill in skills {
+                    println!("- {}: {}", skill.name, skill.description);
+                }
+                println!();
+                continue;
+            }
             _ => {}
         }
 
@@ -155,6 +204,44 @@ async fn main() -> Result<()> {
 
 async fn run_server(agent: Agent) -> Result<()> {
     let shared_agent = Arc::new(Mutex::new(agent));
+    let agent_for_cron = Arc::clone(&shared_agent);
+
+    let cron_manager = Arc::new(CronManager::new(move |task| {
+        let agent_clone = Arc::clone(&agent_for_cron);
+        let task_clone = task.clone();
+        Box::pin(async move {
+            match &task_clone.task_type {
+                TaskType::ChatMessage { message } => {
+                    let mut agent_guard = agent_clone.lock().await;
+                    agent_guard.chat(message).await
+                }
+                TaskType::SkillExecution { skill_name, params } => {
+                    let agent_guard = agent_clone.lock().await;
+                    agent_guard.get_skill_manager().execute_skill(skill_name, params.clone()).await
+                        .map(|result| result.result)
+                }
+                TaskType::CustomCommand { command } => {
+                    let output = tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(command)
+                        .output()
+                        .await?;
+                    if output.status.success() {
+                        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                    } else {
+                        Ok(format!(
+                            "Command failed: {}\nStderr: {}",
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        ))
+                    }
+                }
+            }
+        })
+    }));
+
+    cron_manager.start();
+    println!("⏰ Cron scheduler started");
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     println!("🚀 Server running on http://0.0.0.0:8080");
@@ -163,9 +250,10 @@ async fn run_server(agent: Agent) -> Result<()> {
     loop {
         let (socket, _) = listener.accept().await?;
         let agent_clone = Arc::clone(&shared_agent);
+        let cron_clone = Arc::clone(&cron_manager);
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(socket, agent_clone).await {
+            if let Err(e) = handle_connection(socket, agent_clone, cron_clone).await {
                 eprintln!("Error handling connection: {}", e);
             }
         });
@@ -175,6 +263,7 @@ async fn run_server(agent: Agent) -> Result<()> {
 async fn handle_connection(
     socket: tokio::net::TcpStream,
     agent: Arc<Mutex<Agent>>,
+    cron_manager: Arc<CronManager>,
 ) -> Result<()> {
     let (mut reader, mut writer) = tokio::io::split(socket);
 
@@ -241,6 +330,184 @@ async fn handle_connection(
             format_response(200, &serde_json::to_string(&resp)?)
         }
         "/health" => format_response(200, "{\"status\": \"OK\"}"),
+        "/models" => {
+            let result = get_ollama_models().await;
+            match result {
+                Ok(models) => format_response(200, &models),
+                Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+            }
+        }
+        "/skills" => {
+            let agent_guard = agent.lock().await;
+            let skills = agent_guard.get_skills();
+            format_response(200, &serde_json::to_string(&skills)?)
+        }
+        "/add_skill" => {
+            if let Ok(req) = serde_json::from_str::<AddSkillRequest>(&body) {
+                let mut config = SkillConfig::new(req.name, req.description, req.parameters);
+                
+                if let Some(timeout) = req.timeout_secs {
+                    config = config.with_timeout(timeout);
+                }
+                
+                if let Some(command) = req.command {
+                    config = config.with_command(command);
+                } else if let Some(code) = req.code {
+                    config = config.with_code(code);
+                } else {
+                    return Ok(writer.write_all(format_response(400, "{\"error\": \"Either command or code must be provided\"}").as_bytes()).await?);
+                }
+                
+                let mut agent_guard = agent.lock().await;
+                match agent_guard.add_skill(config).await {
+                    Ok(_) => format_response(200, "{\"message\": \"Skill added successfully\"}"),
+                    Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+                }
+            } else {
+                format_response(400, "{\"error\": \"Invalid skill config\"}")
+            }
+        }
+        "/plan" => {
+            let mut agent_guard = agent.lock().await;
+            if let Ok(request) = serde_json::from_str::<PlanRequest>(&body) {
+                match agent_guard.create_plan(&request.goal).await {
+                    Ok(plan) => format_response(200, &serde_json::to_string(&plan)?),
+                    Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+                }
+            } else {
+                format_response(400, "{\"error\": \"Invalid plan request\"}")
+            }
+        }
+        "/reflect" => {
+            let mut agent_guard = agent.lock().await;
+            match agent_guard.reflect().await {
+                Ok(reflection) => format_response(200, &serde_json::to_string(&reflection)?),
+                Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+            }
+        }
+        "/summarize" => {
+            let agent_guard = agent.lock().await;
+            match agent_guard.summarize().await {
+                Ok(summary) => format_response(200, &serde_json::to_string(&summary)?),
+                Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+            }
+        }
+        "/tasks" => {
+            let tasks = cron_manager.list_tasks();
+            format_response(200, &serde_json::to_string(&tasks)?)
+        }
+        "/add_task" => {
+            if let Ok(req) = serde_json::from_str::<CreateTaskRequest>(&body) {
+                let schedule = match CronSchedule::parse(&req.schedule) {
+                    Ok(s) => s,
+                    Err(e) => return Ok(writer.write_all(format_response(400, &format!("{{\"error\": \"{}\"}}", e)).as_bytes()).await?),
+                };
+
+                let task_type = match req.task_type.task_type.as_str() {
+                    "chat" => {
+                        let message = req.task_type.message.ok_or_else(|| anyhow::anyhow!("message is required for chat task"))?;
+                        TaskType::ChatMessage { message }
+                    }
+                    "skill" => {
+                        let skill_name = req.task_type.skill_name.ok_or_else(|| anyhow::anyhow!("skill_name is required for skill task"))?;
+                        let params = req.task_type.params.unwrap_or(serde_json::json!({}));
+                        TaskType::SkillExecution { skill_name, params }
+                    }
+                    "command" => {
+                        let command = req.task_type.command.ok_or_else(|| anyhow::anyhow!("command is required for command task"))?;
+                        TaskType::CustomCommand { command }
+                    }
+                    _ => return Ok(writer.write_all(format_response(400, "{\"error\": \"Invalid task type\"}").as_bytes()).await?),
+                };
+
+                let task = ScheduledTask {
+                    id: format!("task-{}", uuid::Uuid::new_v4()),
+                    name: req.name,
+                    description: req.description,
+                    schedule,
+                    task_type,
+                    parameters: serde_json::json!({}),
+                    enabled: req.enabled,
+                    last_run: None,
+                    next_run: None,
+                    run_count: 0,
+                    last_result: None,
+                };
+
+                match cron_manager.add_task(task) {
+                    Ok(_) => format_response(200, "{\"message\": \"Task added successfully\"}"),
+                    Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+                }
+            } else {
+                format_response(400, "{\"error\": \"Invalid task request\"}")
+            }
+        }
+        "/remove_task" => {
+            let task_id: Result<serde_json::Value, _> = serde_json::from_str(&body);
+            if let Ok(json) = task_id {
+                if let Some(id) = json["task_id"].as_str() {
+                    match cron_manager.remove_task(id) {
+                        Ok(_) => format_response(200, "{\"message\": \"Task removed successfully\"}"),
+                        Err(e) => format_response(404, &format!("{{\"error\": \"{}\"}}", e)),
+                    }
+                } else {
+                    format_response(400, "{\"error\": \"Missing task_id\"}")
+                }
+            } else {
+                format_response(400, "{\"error\": \"Invalid request\"}")
+            }
+        }
+        "/update_task" => {
+            if let Ok(task) = serde_json::from_str::<ScheduledTask>(&body) {
+                match cron_manager.update_task(task) {
+                    Ok(_) => format_response(200, "{\"message\": \"Task updated successfully\"}"),
+                    Err(e) => format_response(500, &format!("{{\"error\": \"{}\"}}", e)),
+                }
+            } else {
+                format_response(400, "{\"error\": \"Invalid task data\"}")
+            }
+        }
+        "/task_info" => {
+            let task_id: Result<serde_json::Value, _> = serde_json::from_str(&body);
+            if let Ok(json) = task_id {
+                if let Some(id) = json["task_id"].as_str() {
+                    match cron_manager.get_task(id) {
+                        Some(task) => format_response(200, &serde_json::to_string(&task)?),
+                        None => format_response(404, "{\"error\": \"Task not found\"}"),
+                    }
+                } else {
+                    format_response(400, "{\"error\": \"Missing task_id\"}")
+                }
+            } else {
+                format_response(400, "{\"error\": \"Invalid request\"}")
+            }
+        }
+        path if path.starts_with("/static/") => {
+            let file_path = &path[1..];
+            if let Ok(content) = fs::read_to_string(file_path) {
+                let content_type = if file_path.ends_with(".html") {
+                    "text/html"
+                } else if file_path.ends_with(".css") {
+                    "text/css"
+                } else if file_path.ends_with(".js") {
+                    "application/javascript"
+                } else if file_path.ends_with(".json") {
+                    "application/json"
+                } else {
+                    "text/plain"
+                };
+                format_response_with_content_type(200, &content, content_type)
+            } else {
+                format_response(404, "{\"error\": \"File not found\"}")
+            }
+        }
+        "/" => {
+            if let Ok(content) = fs::read_to_string("static/index.html") {
+                format_response_with_content_type(200, &content, "text/html")
+            } else {
+                format_response(404, "{\"error\": \"Index not found\"}")
+            }
+        }
         _ => format_response(404, "{\"error\": \"Not found\"}"),
     };
 
@@ -277,10 +544,29 @@ fn cors_response() -> String {
     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n".to_string()
 }
 
+async fn get_ollama_models() -> Result<String> {
+    let client = reqwest::Client::new();
+    let response = client.get("http://localhost:11434/api/tags")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to fetch models from Ollama");
+    }
+
+    let result: serde_json::Value = response.json().await?;
+    Ok(serde_json::to_string(&result)?)
+}
+
 fn format_response(status: u16, body: &str) -> String {
+    format_response_with_content_type(status, body, "application/json")
+}
+
+fn format_response_with_content_type(status: u16, body: &str, content_type: &str) -> String {
     format!(
-        "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: {}\r\n\r\n{}",
         status,
+        content_type,
         body.len(),
         body
     )

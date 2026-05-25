@@ -7,6 +7,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillConfig {
     pub name: String,
     pub description: String,
@@ -432,6 +440,36 @@ impl SkillManager {
         let skill = self.get_skill(name)
             .with_context(|| format!("Skill '{}' not found", name))?;
         skill.execute(params).await
+    }
+
+    pub async fn add_skill(&mut self, config: SkillConfig) -> Result<()> {
+        if config.command.is_some() {
+            let skill = CommandSkill::new(config);
+            self.skills.insert(skill.name().to_string(), Arc::new(skill));
+        } else {
+            anyhow::bail!("Only command skills are supported for dynamic addition");
+        }
+        Ok(())
+    }
+
+    pub fn get_skills_info(&self) -> Vec<SkillInfo> {
+        let skill_icons: HashMap<&str, (&str, &str)> = [
+            ("read_file", ("📄", "file")),
+            ("write_file", ("✏️", "file")),
+            ("list_directory", ("📁", "folder")),
+            ("http_get", ("🌐", "web")),
+            ("calculate", ("🧮", "calc")),
+        ].iter().cloned().collect();
+
+        self.skills.values().map(|skill| {
+            let (icon, category) = skill_icons.get(skill.name()).unwrap_or(&("🔧", "other"));
+            SkillInfo {
+                name: skill.name().to_string(),
+                description: skill.description().to_string(),
+                icon: icon.to_string(),
+                category: category.to_string(),
+            }
+        }).collect()
     }
 }
 

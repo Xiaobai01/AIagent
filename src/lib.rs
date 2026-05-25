@@ -4,6 +4,10 @@ pub mod prompts;
 pub mod llm;
 pub mod skills;
 pub mod utils;
+pub mod planning;
+pub mod reflection;
+pub mod workflow;
+pub mod cron;
 
 pub use core::*;
 pub use memory::*;
@@ -11,3 +15,7 @@ pub use prompts::*;
 pub use llm::*;
 pub use skills::*;
 pub use utils::*;
+pub use planning::*;
+pub use reflection::*;
+pub use workflow::*;
+pub use cron::*;

@@ -2,7 +2,10 @@ use crate::core::{Message, MessageRole, LLMResponse, ToolCall, ToolResult};
 use crate::memory::MemoryManager;
 use crate::prompts::PromptManager;
 use crate::llm::{LLMProvider, LLMConfig, create_llm_provider};
-use crate::skills::SkillManager;
+use crate::skills::{SkillManager, SkillInfo, SkillConfig};
+use crate::planning::Planner;
+use crate::reflection::Reflector;
+use crate::workflow::WorkflowEngine;
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
@@ -15,19 +18,25 @@ pub struct AgentConfig {
     pub short_term_memory_capacity: Option<usize>,
     pub long_term_memory_capacity: Option<usize>,
     pub max_iterations: usize,
+    pub enable_planning: bool,
+    pub enable_reflection: bool,
+    pub enable_workflow: bool,
 }
 
 impl AgentConfig {
     pub fn new(name: String, llm_config: LLMConfig) -> Self {
         Self {
             name,
-            role: "You are a helpful AI assistant.".to_string(),
-            capabilities: "- Answer questions\n- Help with tasks\n- Execute tools when needed".to_string(),
-            constraints: "- Be helpful and harmless\n- Don't execute dangerous operations\n- Ask for clarification when needed".to_string(),
+            role: "You are Hermes, an advanced AI agent designed for complex task execution. You have planning, reflection, and workflow capabilities.".to_string(),
+            capabilities: "- Task planning and decomposition\n- Tool execution\n- Reflection and self-improvement\n- Workflow management\n- Long-term memory\n- Multi-step reasoning".to_string(),
+            constraints: "- Be helpful and harmless\n- Don't execute dangerous operations\n- Ask for clarification when needed\n- Follow ethical guidelines".to_string(),
             llm_config,
             short_term_memory_capacity: None,
             long_term_memory_capacity: None,
             max_iterations: 10,
+            enable_planning: true,
+            enable_reflection: true,
+            enable_workflow: true,
         }
     }
 
@@ -56,6 +65,21 @@ impl AgentConfig {
         self.max_iterations = max_iterations;
         self
     }
+
+    pub fn with_planning(mut self, enabled: bool) -> Self {
+        self.enable_planning = enabled;
+        self
+    }
+
+    pub fn with_reflection(mut self, enabled: bool) -> Self {
+        self.enable_reflection = enabled;
+        self
+    }
+
+    pub fn with_workflow(mut self, enabled: bool) -> Self {
+        self.enable_workflow = enabled;
+        self
+    }
 }
 
 pub struct Agent {
@@ -64,11 +88,32 @@ pub struct Agent {
     memory: MemoryManager,
     prompt_manager: PromptManager,
     skill_manager: SkillManager,
+    planner: Option<Planner>,
+    reflector: Option<Reflector>,
+    workflow_engine: Option<WorkflowEngine>,
 }
 
 impl Agent {
     pub fn new(config: AgentConfig) -> Result<Self> {
         let llm_provider = create_llm_provider(config.llm_config.clone())?;
+        
+        let planner = if config.enable_planning {
+            Some(Planner::new(config.llm_config.clone())?)
+        } else {
+            None
+        };
+        
+        let reflector = if config.enable_reflection {
+            Some(Reflector::new(config.llm_config.clone())?)
+        } else {
+            None
+        };
+        
+        let workflow_engine = if config.enable_workflow {
+            Some(WorkflowEngine::new())
+        } else {
+            None
+        };
         
         Ok(Self {
             config,
@@ -76,6 +121,9 @@ impl Agent {
             memory: MemoryManager::new(None, None),
             prompt_manager: PromptManager::new(),
             skill_manager: SkillManager::new(),
+            planner,
+            reflector,
+            workflow_engine,
         })
     }
 
@@ -290,6 +338,52 @@ impl Agent {
     pub fn clear_memory(&mut self) {
         self.memory.short_term.clear();
         self.memory.long_term.clear();
+    }
+
+    pub fn get_skills(&self) -> Vec<SkillInfo> {
+        self.skill_manager.get_skills_info()
+    }
+
+    pub async fn add_skill(&mut self, config: SkillConfig) -> Result<()> {
+        self.skill_manager.add_skill(config).await
+    }
+
+    pub async fn create_plan(&mut self, goal: &str) -> Result<crate::planning::Plan> {
+        if let Some(planner) = &mut self.planner {
+            planner.create_plan(goal).await
+        } else {
+            anyhow::bail!("Planning is not enabled")
+        }
+    }
+
+    pub async fn reflect(&mut self) -> Result<crate::reflection::Reflection> {
+        if let Some(reflector) = &mut self.reflector {
+            let messages = self.memory.get_recent_messages(20);
+            reflector.reflect_on_conversation(&messages).await
+        } else {
+            anyhow::bail!("Reflection is not enabled")
+        }
+    }
+
+    pub async fn summarize(&self) -> Result<crate::reflection::ReflectionSummary> {
+        if let Some(reflector) = &self.reflector {
+            let messages = self.memory.get_recent_messages(50);
+            reflector.summarize_session(&messages).await
+        } else {
+            anyhow::bail!("Reflection is not enabled")
+        }
+    }
+
+    pub fn get_planner(&mut self) -> Option<&mut crate::planning::Planner> {
+        self.planner.as_mut()
+    }
+
+    pub fn get_reflector(&self) -> Option<&crate::reflection::Reflector> {
+        self.reflector.as_ref()
+    }
+
+    pub fn get_workflow_engine(&mut self) -> Option<&mut crate::workflow::WorkflowEngine> {
+        self.workflow_engine.as_mut()
     }
 
     pub fn get_stats(&self) -> AgentStats {

@@ -281,6 +281,10 @@ impl MemoryManager {
         (recent_messages, long_term_items.into_iter().take(long_term_limit).collect())
     }
 
+    pub fn get_recent_messages(&self, count: usize) -> Vec<Message> {
+        self.short_term.get_recent(count)
+    }
+
     pub fn search_long_term(&self, query: &str, limit: usize) -> Vec<&LongTermMemoryItem> {
         self.long_term.search(query, limit)
     }
